@@ -83,6 +83,63 @@ namespace
     return static_cast<G4int>(id);
   }
 
+  // GenPID (optional conf key): 1:K+ 2:K- 3:pi+ 4:pi- 5:p 6:e- 7:mu- 8:xi-
+  // Returns "" for 0/unrecognized so callers fall back to their
+  // historical per-experiment default species.
+  G4String GenPidToName(G4int gen_pid)
+  {
+    switch(gen_pid){
+    case 1: return "kaon+";
+    case 2: return "kaon-";
+    case 3: return "pi+";
+    case 4: return "pi-";
+    case 5: return "proton";
+    case 6: return "e-";
+    case 7: return "mu-";
+    case 8: return "xi-";
+    default: return "";
+    }
+  }
+
+  // Legendre polynomial, used for the K0bar c.m.-frame angular
+  // distribution in GenerateK0Production (Conforto et al., Nucl.
+  // Phys. B105 (1976) 189-221, K-p->K0bar n Legendre A_l
+  // coefficients at 1.355 GeV/c -- see analysis-note.md 2026-07-12
+  // entries).
+  G4double LegendreP_K0(G4int l, G4double x)
+  {
+    if(l == 0) return 1.;
+    if(l == 1) return x;
+    G4double p0 = 1., p1 = x, pl = 0.;
+    for(G4int n = 2; n <= l; ++n){
+      pl = ((2*n-1)*x*p1 - (n-1)*p0)/n;
+      p0 = p1; p1 = pl;
+    }
+    return p1;
+  }
+
+  // Uniform-in-volume vertex sampling within a box-shaped target
+  // (half_size = full extents/2, matching the
+  // sizeMan.GetSize("Target")*mm/2 convention used throughout this
+  // file). Added 2026-07-19: Generator 2/1001/1002 previously placed
+  // every vertex at the single fixed point target_pos even though
+  // the target volume is a real (now 50x50x20mm, sized to fit the
+  // shared E90/HypTPC target holder's phi80mm bore -- see
+  // param/DSIZE/DetSize_E10_9hesigma_kpi) G4Box: every generated
+  // particle therefore traversed the same path length through target
+  // material, missing the extra straggling/multiple-scattering
+  // spread a real uniform-in-volume vertex distribution produces.
+  // See k0-background.md section 7/8 and analysis-note.md 2026-07-19
+  // entries.
+  G4ThreeVector SampleUniformTargetVertex(const G4ThreeVector& target_pos,
+                                          const G4ThreeVector& half_size)
+  {
+    const G4double x0 = G4RandFlat::shoot(-half_size.x(), half_size.x());
+    const G4double y0 = G4RandFlat::shoot(-half_size.y(), half_size.y());
+    const G4double z0 = G4RandFlat::shoot(-half_size.z(), half_size.z());
+    return target_pos + G4ThreeVector(x0, y0, z0);
+  }
+
   void RecordGeneratedParticle(const G4String& branch,
                                GenBranch::ParticleId mother_id,
                                G4int pdg,
@@ -196,6 +253,8 @@ S2SPrimaryGeneratorAction::GeneratePrimaries(G4Event* anEvent)
   case 9002: GenerateQFLambda(anEvent); break;
   case 9003: GenerateQFSigmaZ(anEvent); break;
   case 9004: GenerateQFSigmaP(anEvent); break;
+  case 1001: GenerateK0Production(anEvent); break; // E10
+  case 1002: GenerateK0CoherentProduction(anEvent); break; // E10
   default:
     G4cerr << " * Generator number error : " << m_generator << G4endl;
     break;
@@ -284,7 +343,11 @@ S2SPrimaryGeneratorAction::GenerateUniformSpherical(G4Event* anEvent)
 {
   static const G4int n_particle = 1;
   m_particleGun = new G4ParticleGun(n_particle);
-  static const G4String name = "kaon+";
+  // GenPID (optional conf key, see GenPidToName above); 0/unset keeps
+  // the historical default of kaon+.
+  static const G4int gen_pid = confMan.Get<G4int>("GenPID");
+  static const G4String gen_pid_name = GenPidToName(gen_pid);
+  static const G4String name = gen_pid_name.empty() ? "kaon+" : gen_pid_name;
   // static const G4String name = "proton";
   static const auto particle = particleTable->FindParticle(name);
   static const auto pdg = particle->GetPDGEncoding();
@@ -292,14 +355,45 @@ S2SPrimaryGeneratorAction::GenerateUniformSpherical(G4Event* anEvent)
   static const auto& target_size = sizeMan.GetSize("Target")*mm/2;
   static const G4double m0 = particle->GetPDGMass();
   static const G4int experiment = confMan.Get<G4int>("Experiment");
-  G4double p0 = (experiment == 10)
-    ? G4RandFlat::shoot(0.6, 1.2)*GeV
-    : G4RandFlat::shoot(1.37, 1.38)*GeV;
-  if(experiment==90)
-    p0 = G4RandFlat::shoot(0.9, 1.5)*GeV;
+  // GenMomCent/GenMomBite (GeV/c, optional conf keys): flat momentum
+  // window [GenMomCent-GenMomBite/2, GenMomCent+GenMomBite/2]. Unset
+  // (either <= 0) falls back to the historical per-experiment ranges.
+  static const G4double gen_mom_cent = confMan.Get<G4double>("GenMomCent");
+  static const G4double gen_mom_bite = confMan.Get<G4double>("GenMomBite");
+  G4double p0;
+  if(gen_mom_cent > 0. && gen_mom_bite > 0.){
+    p0 = G4RandFlat::shoot(gen_mom_cent - gen_mom_bite/2.,
+                           gen_mom_cent + gen_mom_bite/2.)*GeV;
+  }else{
+    p0 = (experiment == 10)
+      ? G4RandFlat::shoot(0.6, 1.2)*GeV
+      : G4RandFlat::shoot(1.37, 1.38)*GeV;
+    if(experiment==90)
+      p0 = G4RandFlat::shoot(0.9, 1.5)*GeV;
+  }
 
+  // GenTheta (deg, optional conf key): max polar angle. Unset (<= 0)
+  // falls back to 20 deg.
+  static const G4double gen_theta_max = confMan.Get<G4double>("GenTheta");
+  static const G4double theta_max =
+    (gen_theta_max > 0.) ? gen_theta_max*deg : 20.*deg;
+  // GenThetaFlat (0/1, optional conf key, default 0): sampling in
+  // theta. 0 = solid-angle-uniform (uniform in cos theta, the
+  // historical default). 1 = FLAT in theta -- gives EQUAL statistics
+  // per theta bin, so a (theta,p) acceptance MAP is not starved at
+  // small theta (where dN/dtheta ~ sin theta -> ~0 for cos-uniform,
+  // yet that is exactly the high-acceptance forward region). The
+  // acceptance is a per-bin Acc/Gen ratio, so it is INVARIANT under
+  // this sampling choice -- only the map's statistical noise changes.
+  // See analysis-note.md 2026-07-23 acceptance-map entry.
+  static const G4int gen_theta_flat = confMan.Get<G4int>("GenThetaFlat");
+  // theta_max is already in CLHEP internal angle units (radian==1), so
+  // a flat draw over [0, theta_max] is directly the polar angle.
   G4double theta =
-    std::acos(G4RandFlat::shoot(std::cos(0*deg), std::cos(20*deg)))*radian;
+    (gen_theta_flat != 0)
+      ? G4RandFlat::shoot(0., theta_max)
+      : std::acos(G4RandFlat::shoot(std::cos(0.*radian),
+                                    std::cos(theta_max)))*radian;
   G4double phi = G4RandFlat::shoot(0., 360.)*deg;
   G4LorentzVector p(0, 0, 0, TMath::Sqrt(p0*p0 + m0*m0));
   p.setRThetaPhi(p0, theta, phi);
@@ -309,9 +403,10 @@ S2SPrimaryGeneratorAction::GenerateUniformSpherical(G4Event* anEvent)
   beam.VO(zK18Target);
 
   if(experiment!=90){
-    beam.pos.setX(target_pos.x());
-    beam.pos.setY(target_pos.y());
-    beam.pos.setZ(target_pos.z());
+    const auto vtx = SampleUniformTargetVertex(target_pos, target_size);
+    beam.pos.setX(vtx.x());
+    beam.pos.setY(vtx.y());
+    beam.pos.setZ(vtx.z());
   }
   if(experiment==90){
     double beam_x = G4RandGauss::shoot(target_pos.x(),23.);
@@ -2214,4 +2309,430 @@ void S2SPrimaryGeneratorAction::GenerateQFSigmaP(G4Event* anEvent)
                           u0, v0, phi_pi, theta_pi, p0, pB, 9999); // x0,y0,z0,u0,v0,phi,theta,p0,pB,ParIdNb
     break;
   }
+}
+
+//_____________________________________________________________________________
+// Generator 1001 (E10 namespace: E63 uses 63xx, E70 uses 70xx/75xx,
+// E90 uses 90xx -- keeping E10's own generators out of those blocks
+// avoids ID collisions in this shared repo): K0 production for
+// 9Be(K-,pi+) background studies.
+//
+// K- + p (bound proton, quasi-free m_p-S_p) -> K0bar + n, with the
+// K0bar c.m.-frame angle sampled from the MEASURED angular
+// distribution (Conforto et al., Nucl. Phys. B105 (1976) 189-221,
+// Rutherford-Imperial College collaboration, Legendre A_l
+// coefficients at their highest point, p_K-=1.355 GeV/c -- the
+// closest available data to our p_beam=1.5 GeV/c; their range does
+// not quite reach 1.5 GeV/c). K-p->K0bar n is BACKWARD-peaked in the
+// K0bar c.m. angle throughout Conforto's whole 0.960-1.355 GeV/c
+// range (backward/forward dsigma/dcosTheta* ratio ~1.5-5.8).
+//
+// REVISION (2026-07-12, later): rather than hand-computing the
+// K0_S/K0_L species mixing, decay channel and flight length
+// ourselves in C++ (as the two earlier revisions of this function
+// did), the K0bar is generated as an actual Geant4 primary
+// ("anti_kaon0") and everything downstream -- the K0_S/K0_L mixing,
+// each species' full decay table (pi+pi-, pi0pi0, pi+pi-pi0,
+// pi0pi0pi0, Ke3, Kmu3, ... with their real PDG branching ratios and
+// matrix elements) and the flight length before decay (from each
+// species' real proper lifetime) -- is handled by Geant4's own
+// G4Decay physics (conf: DECAY:1) acting on the real lab-frame
+// track, through the real geometry/field/materials. This is more
+// complete (every channel, not just an importance-sampled pi+
+// subset) and removes the need to hand-model the World-volume
+// boundary for K0_L's long flight length.
+//
+// Because the resulting charged decay products are Geant4
+// *secondaries* (parent track = the K0bar/K0_S/K0_L, not the
+// event's primary vertex), they never satisfy VHitInfo::IsPrimary()
+// (which requires track_id==1), so the historical
+// trigger_flag[kTOF/kAC1/kWC] logic in S2SAnaManager (which gates on
+// IsPrimary()) cannot see them. Acceptance for this generator (and,
+// more generally, for all Experiment==10 studies) is therefore
+// evaluated via the common e10 downstream-counter criterion in
+// S2SAnaManager::EndOfEvent: a charged hit in TOF, a charged hit in
+// AC1 exceeding its aerogel Cherenkov threshold (n=1.05), and a
+// charged hit in WC, from ANY track -- matching how the real
+// hardware trigger works (it does not know which track is "primary"
+// or what species it is). See analysis-note.md for the derivation
+// and results.
+void
+S2SPrimaryGeneratorAction::GenerateK0Production(G4Event* anEvent)
+{
+  m_particleGun = new G4ParticleGun();
+
+  const auto pTable = G4ParticleTable::GetParticleTable();
+  const auto anti_kaon0 = pTable->FindParticle("anti_kaon0");
+  const auto kaon_minus = pTable->FindParticle("kaon-");
+  const auto neutron    = pTable->FindParticle("neutron");
+
+  const G4double M_K0 = anti_kaon0->GetPDGMass()/CLHEP::GeV;  // GeV
+  const G4double M_KM = kaon_minus->GetPDGMass()/CLHEP::GeV;  // GeV
+  const G4double M_N  = neutron->GetPDGMass()/CLHEP::GeV;     // GeV
+  const auto pdg_anti_kaon0 = anti_kaon0->GetPDGEncoding();
+
+  // Bound-proton effective mass (quasi-free): M_target - M_spectator
+  // (9Be->8Li+p, or 12C->11B+p for the E05 SKS cross-check).
+  // Selected by conf key "K0TargetA" (9 default / 12); missing key
+  // reads 0 -> treated as 9.
+  const G4int k0_target_a = confMan.Get<G4int>("K0TargetA");
+  const G4bool k0_is_c12 = (k0_target_a == 12);
+  const G4double M_P_EFF =
+    k0_is_c12 ? (11.174862342 - 10.252547297) : 0.9213850010499991;
+  // K- beam momentum (GeV/c): optional conf key "K0BeamMom" for a
+  // beam-momentum scan (see analysis-note.md 2026-07-13 entries);
+  // defaults to 1.5 GeV/c if unset (ConfMan::Get<G4double> silently
+  // returns 0. for a missing key, so treat 0 as "not set").
+  const G4double k0_beam_mom_conf = confMan.Get<G4double>("K0BeamMom");
+  const G4double P_BEAM = (k0_beam_mom_conf > 0.) ? k0_beam_mom_conf : 1.5;
+
+  // Optional Fermi motion of the struck (bound) proton: conf key
+  // "K0FermiMotion" (0/1, default 0 = off, backward compatible).
+  //
+  // Momentum distribution: the exact 1p harmonic-oscillator momentum
+  // density |phi~_1p(p)|^2 p^2 ~ p^4 exp(-b~^2 p^2), which is a
+  // chi-distribution with 5 degrees of freedom in |p| (scale sigma =
+  // hbarc/(b~ sqrt(2)) per Cartesian component), direction isotropic.
+  // b~ = 1.716 fm is the CM-CORRECTED 9Be 1p oscillator parameter
+  // (neff_calc.py B_9BE_N): the struck nucleon's momentum in the
+  // nucleus rest frame IS the nucleon-core relative momentum (they
+  // are back to back), and the relative-coordinate wave function
+  // carries b~, not the bare mean-field b. <p^2> = (5/2)(hbarc/b~)^2
+  // -> p_rms ~ 182 MeV/c, consistent with the |p|~Gauss(163,50)
+  // MeV/c model in reaction-kinematics/module/channels.py (~170).
+  //
+  // Energy: spectator-recoil energy conservation (same form as
+  // reaction-kinematics/module/generator.py `_initial_state`): the
+  // nucleus at rest splits into the struck proton (+p) and an
+  // on-shell 8Li spectator core (-p), so
+  //   E_p(p) = M(9Be) - sqrt(p^2 + M(8Li)^2),
+  // which reduces to E_p(0) = M(9Be)-M(8Li) = M_P_EFF exactly. An
+  // earlier version (2026-07-13) instead used the WRONG
+  // sqrt(p^2 + M_P_EFF^2) -- giving the proton its Fermi momentum
+  // "for free" (energy INCREASES with p, violating the nuclear
+  // energy budget) and a per-component Gaussian of sigma=hbarc/b_bare
+  // (a 1s-shaped distribution with the wrong width). Both fixed
+  // 2026-07-14; see analysis-note.md and
+  // reaction-kinematics/CHANGELOG.md (2026-07-14 entries).
+  const G4int k0_fermi_motion = confMan.Get<G4int>("K0FermiMotion");
+  const G4double kHbarc_GeVfm = 0.197327;   // GeV*fm
+  // CM-corrected 1p oscillator length b~ = b_bare*sqrt(A/(A-1)):
+  // 9Be 1.617*sqrt(9/8)=1.716, 12C 1.669*sqrt(12/11)=1.743 fm.
+  const G4double kB9BeTilde_fm = k0_is_c12 ? 1.743 : 1.716;
+  const G4double kFermiSigma_GeV =
+    kHbarc_GeVfm/(kB9BeTilde_fm*std::sqrt(2.)); // ~0.0813 GeV/c
+  // Target/spectator nuclear masses (AME atomic - Z*m_e), consistent
+  // with M_P_EFF above: M_target - M_spectator == M_P_EFF.
+  const G4double M_9BE_GEV = k0_is_c12 ? 11.174862342 : 8.39275100376;
+  const G4double M_8LI_GEV = k0_is_c12 ? 10.252547297 : 7.47136600282;
+  // Cap |p| so the off-shell proton's invariant mass^2 stays
+  // positive (P(chi5 tail beyond this) ~ 1e-13; physically the HO
+  // density there is negligible anyway).
+  const G4double kFermiPMax_GeV = 0.7;
+  G4double targetPx = 0., targetPy = 0., targetPz = 0.;
+  G4double eTargetFermi = M_P_EFF;
+  if(k0_fermi_motion != 0){
+    G4double pMag;
+    do {
+      G4double chi2 = 0.;
+      for(G4int i = 0; i < 5; ++i){
+        const G4double g = G4RandGauss::shoot(0., 1.);
+        chi2 += g*g;
+      }
+      pMag = kFermiSigma_GeV*std::sqrt(chi2);
+    } while(pMag > kFermiPMax_GeV);
+    const G4double cosT = G4RandFlat::shoot(-1., 1.);
+    const G4double sinT = std::sqrt(std::max(0., 1. - cosT*cosT));
+    const G4double phi = G4RandFlat::shoot(0., 2.*M_PI);
+    targetPx = pMag*sinT*std::cos(phi);
+    targetPy = pMag*sinT*std::sin(phi);
+    targetPz = pMag*cosT;
+    eTargetFermi =
+      M_9BE_GEV - std::sqrt(pMag*pMag + M_8LI_GEV*M_8LI_GEV);
+  }
+
+  // Measured K-p -> K0bar n angular distribution, Legendre A_l with
+  // dsigma/dcosTheta* = sum_l A_l P_l(cosTheta*), cosTheta*=+1 =
+  // K0bar forward. Nucl. Phys. B91 (1970) 12 at p_K- = 1.478, 1.519,
+  // 1.800 GeV/c (data/legendre_kpk0n.yaml), SELECTED BY BEAM MOMENTUM
+  // (linear interpolation, clamped to the measured endpoints).
+  //
+  // CRUCIAL FIX (2026-07-23, codex E10-2nd handoff sec.17): the shape
+  // REVERSES with momentum. The old code used a FIXED Conforto 1.355
+  // GeV/c shape (forward/backward ~0.12, strongly BACKWARD-peaked) at
+  // every beam momentum -- but at 1.8 GeV/c the real reaction is
+  // strongly FORWARD-peaked (fwd/bwd ~6.2). Since forward K0bar ->
+  // forward K0_S -> forward pi+ -> into the signal window, the old
+  // shape badly UNDER-produced the forward K0bar and thus
+  // under-estimated the quasi-free window background at high p_beam.
+  // Only the SHAPE matters here; the absolute rate is applied at
+  // analysis time via sigma_k0_tot_mb (Bricman).
+  static const G4int nA = 10;
+  static const G4int nMom = 3;
+  static const G4double momGrid[nMom] = {1.478, 1.519, 1.800};
+  static const G4double AlGrid[nMom][nA] = {
+    {0.168, 0.101, 0.113,-0.116,-0.003,-0.079, 0.110,-0.134,-0.043, 0.036},
+    {0.154, 0.169, 0.159,-0.044, 0.072,-0.044, 0.081,-0.143, 0.022,-0.012},
+    {0.169, 0.213, 0.282, 0.253, 0.185, 0.094,-0.013,-0.075, 0.031,-0.013}
+  };
+  G4double Al[nA];
+  if(P_BEAM <= momGrid[0]){
+    for(G4int l=0;l<nA;++l) Al[l]=AlGrid[0][l];
+  } else if(P_BEAM >= momGrid[nMom-1]){
+    for(G4int l=0;l<nA;++l) Al[l]=AlGrid[nMom-1][l];
+  } else {
+    G4int k=0; while(k<nMom-1 && P_BEAM>momGrid[k+1]) ++k;
+    const G4double f=(P_BEAM-momGrid[k])/(momGrid[k+1]-momGrid[k]);
+    for(G4int l=0;l<nA;++l) Al[l]=(1.-f)*AlGrid[k][l]+f*AlGrid[k+1][l];
+  }
+  auto dSigmaDCosTheta = [&Al](G4double x){
+    G4double s = 0.;
+    for(G4int l = 0; l < nA; ++l) s += Al[l]*LegendreP_K0(l, x);
+    return std::max(s, 0.);
+  };
+  static G4double fMax = -1.;
+  if(fMax < 0.){
+    fMax = 0.;
+    for(G4int i = 0; i <= 2000; ++i){
+      G4double x = -1. + 2.*i/2000.;
+      fMax = std::max(fMax, dSigmaDCosTheta(x));
+    }
+    fMax *= 1.05; // safety margin for the rejection-sampling envelope
+  }
+
+  // c.m. kinematics: K-(beam) + p(bound, at rest unless K0FermiMotion
+  // is enabled above) -> K0bar + n.
+  const G4double eBeam = std::sqrt(P_BEAM*P_BEAM + M_KM*M_KM);
+  TLorentzVector beamLab(0., 0., P_BEAM, eBeam);
+  TLorentzVector targetLab(targetPx, targetPy, targetPz, eTargetFermi);
+  TLorentzVector cmSystem = beamLab + targetLab;
+  const TVector3 cmBoost = cmSystem.BoostVector();
+  // Approximation: the Conforto angular distribution below is still
+  // sampled relative to the lab z-axis (nominal beam direction), not
+  // the exact K-p c.m.-frame beam axis (which tilts slightly once
+  // the target proton has transverse Fermi momentum). This is a
+  // second-order effect on top of an already-approximate Fermi
+  // motion model and is neglected here.
+  const G4double sqrtS = cmSystem.M();
+  const G4double eStarK0 = (sqrtS*sqrtS + M_K0*M_K0 - M_N*M_N)/(2*sqrtS);
+  const G4double pStarK0 =
+    std::sqrt(std::max(0., eStarK0*eStarK0 - M_K0*M_K0));
+
+  G4double x, y;
+  do {
+    x = G4RandFlat::shoot(-1., 1.);
+    y = G4RandFlat::shoot(0., fMax);
+  } while(y > dSigmaDCosTheta(x));
+  const G4double thStarK0 = std::acos(x);
+  const G4double phiStarK0 = G4RandFlat::shoot(0., 2.*M_PI);
+  TLorentzVector k0Cm(
+    pStarK0*std::sin(thStarK0)*std::cos(phiStarK0),
+    pStarK0*std::sin(thStarK0)*std::sin(phiStarK0),
+    pStarK0*std::cos(thStarK0),
+    eStarK0);
+  TLorentzVector k0Lab(k0Cm);
+  k0Lab.Boost(cmBoost);
+
+  static const auto& target_pos = geomMan.GetGlobalPosition("Target")*mm;
+  static const auto& target_size = sizeMan.GetSize("Target")*mm/2;
+  const auto vtx = SampleUniformTargetVertex(target_pos, target_size);
+  const G4LorentzVector vertex_lv(vtx, 0.);
+
+  m_particleGun->SetParticleDefinition(anti_kaon0);
+  m_particleGun->SetParticleMomentumDirection(
+    G4ThreeVector(k0Lab.Px(), k0Lab.Py(), k0Lab.Pz()).unit());
+  m_particleGun->SetParticleEnergy(
+    k0Lab.E()*CLHEP::GeV - anti_kaon0->GetPDGMass());
+  m_particleGun->SetParticlePosition(vtx);
+  m_particleGun->GeneratePrimaryVertex(anEvent);
+
+  anaMan.SetPrimaryParticle(0, pdg_anti_kaon0, ToG4Lorentz(k0Lab), vertex_lv);
+}
+
+//_____________________________________________________________________________
+// K- + 9Be(rest) -> K0bar + 9Li(g.s.), the COHERENT charge-exchange
+// channel: unlike GenerateK0Production (quasi-free, K- scatters off
+// ONE bound, Fermi-moving proton with an 8Li spectator core), here
+// K0bar recoils against the WHOLE nucleus in a single bound final
+// state. Deliberately kept as a SEPARATE generator/reaction number
+// (1002, not folded into 1001's K0FermiMotion machinery): the two
+// mechanisms have different targets (single proton vs. whole
+// nucleus), different final states (continuum vs. one discrete
+// state), different angular distributions (measured Conforto shape
+// vs. a steep forward nuclear form factor) and, physically, do not
+// interfere (quasi-free populates states above the n+8Li breakup
+// threshold; coherent produces a genuine bound state below it) --
+// so they are combined as an incoherent sum of independently
+// generated, independently normalized samples, exactly as the
+// signal and (K-,K0bar) background are already combined at the
+// analysis level (beam_scan_absolute_signal.py). Running this as
+// its own generator also means its (much rarer) yield gets its own
+// dedicated event budget instead of being diluted inside 1001's
+// statistics -- see k0-background.md section 5 and
+// reaction-kinematics/geant4-scan/coherent_channel.py, which this
+// function ports to Geant4 (that script's numbers are the reference
+// this generator should reproduce once cross-checked).
+//
+// dsigma/dOmega(theta_K0) is NOT a measured shape (nothing has ever
+// been measured for this exact reaction): it is modelled as a
+// Gaussian nuclear form factor |F(q)|^2 = exp(-q_fm^2 R^2/6), R=2.52
+// fm (9Be rms radius). The overall normalization (B(GT), spin-flip
+// fraction, distortion) only sets the ABSOLUTE rate, which this
+// generator does not need to know: like GenerateK0Production, it
+// only shapes the KINEMATIC distribution; the absolute weight per
+// event is applied at analysis time (matching sigma_k0_tot_mb's role
+// for the quasi-free channel).
+void
+S2SPrimaryGeneratorAction::GenerateK0CoherentProduction(G4Event* anEvent)
+{
+  m_particleGun = new G4ParticleGun();
+
+  const auto pTable = G4ParticleTable::GetParticleTable();
+  const auto anti_kaon0 = pTable->FindParticle("anti_kaon0");
+  const auto kaon_minus = pTable->FindParticle("kaon-");
+
+  const G4double M_K0 = anti_kaon0->GetPDGMass()/CLHEP::GeV;
+  const G4double M_KM = kaon_minus->GetPDGMass()/CLHEP::GeV;
+  const auto pdg_anti_kaon0 = anti_kaon0->GetPDGEncoding();
+
+  // Target and coherent bound recoil (ground state), AME2020 atomic
+  // masses - Z*m_e. Selected by conf key "K0TargetA" (9 = 9Be->9Li
+  // default, backward compatible; 12 = 12C->12B for the E05 SKS
+  // cross-check). Missing key reads as 0 -> treated as 9.
+  const G4int k0_target_a = confMan.Get<G4int>("K0TargetA");
+  const G4bool k0_is_c12 = (k0_target_a == 12);
+  const G4double M_9BE_GEV = k0_is_c12 ? 11.174862342 : 8.39274983976;
+  const G4double M_9LI_GEV = k0_is_c12 ? 11.188742741 : 8.40686715782;
+
+  // K- beam momentum: same conf key as the quasi-free channel
+  // (K0BeamMom), so the two can be scanned together point by point.
+  const G4double k0_beam_mom_conf = confMan.Get<G4double>("K0BeamMom");
+  const G4double P_BEAM = (k0_beam_mom_conf > 0.) ? k0_beam_mom_conf : 1.5;
+
+  // Multipole channel selection (2026-07-24, ff_multipole_study.py):
+  //   K0CoherentEx [MeV]: daughter excitation energy (default 0 =
+  //     ground state; e.g. 2.691 for 9Li* 1/2-).
+  //   K0CoherentL: transferred orbital angular momentum, 0/1/2
+  //     (default 0 = GT-like spin-flip, the pre-existing behaviour).
+  // Missing keys read as 0 via ConfMan's map access, so old conf
+  // files keep producing the g.s. GT channel unchanged.
+  const G4double coh_ex_mev = confMan.Get<G4double>("K0CoherentEx");
+  const G4int coh_ell = confMan.Get<G4int>("K0CoherentL");
+
+  // 1p-shell harmonic-oscillator transition form factors F_L(q),
+  // closed forms validated against numerical radial integrals in
+  // reaction-kinematics/geant4-scan/ff_multipole_study.py:
+  //   x = (q b / hbarc)^2, b = 1.617 fm for 9Be
+  //   F_0 = (1 - x/6) exp(-x/4)              (1p->1p, monopole)
+  //   F_1 = sqrt(2/45) sqrt(x) (5/2 - x/4) exp(-x/4)  (1p->1d)
+  //   F_2 = (x/6) exp(-x/4)                  (1p->1p, quadrupole)
+  // These replace the earlier Gaussian-matter exp(-q^2 R^2/6): the
+  // multipole structure (not the overall size) decides WHICH bound
+  // state dominates at each angle, which is the question here.
+  // b = 1.617 fm (9Be) / 1.669 fm (12C), hbar_omega = 45A^-1/3 -
+  // 25A^-2/3 (see ff_multipole_study.osc_length_fm).
+  const G4double kOscB_fm = k0_is_c12 ? 1.669 : 1.617;
+  const G4double kHbarc_GeVfm = 0.197327;
+
+  // Lab-frame two-body momentum of the K0bar at angle theta_lab
+  // (rad), for K-(p_beam,+z) + 9Be(rest) -> K0bar(theta_lab) + 9Li --
+  // same quadratic-formula solution as
+  // hypernuclear-production/scripts/momentum_transfer.two_body_p_out
+  // and reaction-kinematics/geant4-scan/coherent_channel.
+  // two_body_lab_p (already cross-checked there).
+  const G4double mDaughter = M_9LI_GEV + coh_ex_mev*1e-3;
+  auto k0MomentumAt = [&](G4double thetaLab) -> G4double {
+    const G4double eIn = std::sqrt(P_BEAM*P_BEAM + M_KM*M_KM);
+    const G4double eTot = eIn + M_9BE_GEV;
+    const G4double s = M_KM*M_KM + M_9BE_GEV*M_9BE_GEV
+      + 2.*M_9BE_GEV*eIn;
+    const G4double f = s + M_K0*M_K0 - mDaughter*mDaughter;
+    const G4double g = 2.*P_BEAM*std::cos(thetaLab);
+    const G4double denom = 4.*eTot*eTot - g*g;
+    const G4double disc = f*f - M_K0*M_K0*denom;
+    return (f*g + 2.*eTot*std::sqrt(std::max(0., disc)))/denom;
+  };
+  auto formFactorL2 = [&](G4double thetaLab, G4double pK0) -> G4double {
+    const G4double q2 = P_BEAM*P_BEAM + pK0*pK0
+      - 2.*P_BEAM*pK0*std::cos(thetaLab);
+    const G4double qb = std::sqrt(std::max(0., q2))
+      / kHbarc_GeVfm * kOscB_fm;
+    const G4double x = qb*qb;
+    const G4double gauss = std::exp(-x/4.);
+    G4double fl = 0.;
+    switch(coh_ell){
+    case 0: fl = (1. - x/6.)*gauss; break;
+    case 1: fl = std::sqrt(2./45.)*qb*(2.5 - x/4.)*gauss; break;
+    case 2: fl = (x/6.)*gauss; break;
+    default:
+      G4Exception("GenerateK0CoherentProduction", "K0COH", // NOLINT
+                  FatalException, "K0CoherentL must be 0, 1 or 2");
+    }
+    return fl*fl;
+  };
+
+  // Angular weight for the coherent (GT-driven, spin-flip) K0bar:
+  //   dsigma/dOmega ~ |t_spin-flip|^2 * |F(q)|^2,  with the meson
+  //   (spin-0) SPIN-FLIP amplitude vanishing at theta*=0 (~ sin^2
+  //   theta* near forward -- see k0-background.md 5.3 point 2). The
+  //   old version used |F(q)|^2 alone (peaked at theta=0), which
+  //   OVER-produced the deepest-wall K0bar exactly where it lands in
+  //   the signal window. Multiplying by sin^2(theta) suppresses
+  //   theta=0 and pushes the K0bar to a small non-zero angle, so the
+  //   coherent background right at the wall is reduced (favourable).
+  //   theta here is the lab K0bar angle; for coherent recoil off a
+  //   heavy nucleus theta_lab ~ theta*_cm at these small angles, so
+  //   sin^2(theta_lab) is used as the forward-suppression factor (the
+  //   exact spin-flip angular shape needs the elementary PWA -- codex
+  //   E10-2nd handoff sec.7.2/17, documented as an uncertainty).
+  //   Added 2026-07-23. Full theta-sampling weight = |F|^2 * sin^2
+  //   (spin-flip) * sin (solid-angle Jacobian) = |F|^2 * sin^3(theta).
+  //   2026-07-24: the explicit sin^2 applies to the L=0 GT channel
+  //   only (F_0(0)=1 needs it); F_1 ~ q and F_2 ~ q^2 already vanish
+  //   at theta=0 by themselves, so L=1/2 use just |F_L|^2 * sin.
+  auto angWeight = [&](G4double th) -> G4double {
+    const G4double s = std::sin(th);
+    const G4double sf = (coh_ell == 0) ? s*s : 1.;
+    return formFactorL2(th, k0MomentumAt(th)) * sf * s;
+  };
+  static const G4double thetaMaxRad = 20.*CLHEP::deg/CLHEP::rad;
+  static G4double envelope = -1.;
+  if(envelope < 0.){
+    envelope = 0.;
+    for(G4int i = 0; i <= 400; ++i){
+      const G4double th = thetaMaxRad*i/400.;
+      envelope = std::max(envelope, angWeight(th));
+    }
+    envelope *= 1.05; // safety margin for the rejection-sampling envelope
+  }
+  G4double trialTheta, trialY;
+  do {
+    trialTheta = G4RandFlat::shoot(0., thetaMaxRad);
+    trialY = G4RandFlat::shoot(0., envelope);
+  } while(trialY > angWeight(trialTheta));
+  const G4double thStarK0 = trialTheta;
+  const G4double phiK0 = G4RandFlat::shoot(0., 2.*M_PI);
+  const G4double pK0 = k0MomentumAt(thStarK0);
+  const G4double eK0 = std::sqrt(pK0*pK0 + M_K0*M_K0);
+
+  TLorentzVector k0Lab(
+    pK0*std::sin(thStarK0)*std::cos(phiK0),
+    pK0*std::sin(thStarK0)*std::sin(phiK0),
+    pK0*std::cos(thStarK0),
+    eK0);
+
+  static const auto& target_pos = geomMan.GetGlobalPosition("Target")*mm;
+  static const auto& target_size = sizeMan.GetSize("Target")*mm/2;
+  const auto vtx = SampleUniformTargetVertex(target_pos, target_size);
+  const G4LorentzVector vertex_lv(vtx, 0.);
+
+  m_particleGun->SetParticleDefinition(anti_kaon0);
+  m_particleGun->SetParticleMomentumDirection(
+    G4ThreeVector(k0Lab.Px(), k0Lab.Py(), k0Lab.Pz()).unit());
+  m_particleGun->SetParticleEnergy(
+    k0Lab.E()*CLHEP::GeV - anti_kaon0->GetPDGMass());
+  m_particleGun->SetParticlePosition(vtx);
+  m_particleGun->GeneratePrimaryVertex(anEvent);
+
+  anaMan.SetPrimaryParticle(0, pdg_anti_kaon0, ToG4Lorentz(k0Lab), vertex_lv);
 }
