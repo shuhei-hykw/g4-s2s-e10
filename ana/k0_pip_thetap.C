@@ -22,7 +22,7 @@
 void k0_pip_thetap(const char* fname, const char* tag)
 {
   gSystem->Load("bin/libG4S2S_lib.so");
-  const int N_DECAY = 5;               // decays sampled per K0bar
+  const int N_DECAY = 40;              // decays sampled per K0bar
   const double M_K0  = 497.611;        // MeV (K0_S ~ K0 mass)
   const double M_PIP = 139.57039;      // MeV
 
@@ -35,9 +35,15 @@ void k0_pip_thetap(const char* fname, const char* tag)
   tree->SetBranchAddress("PRM", &prm);
 
   // theta 0-30 deg (covers both S-2S and SKS), p 0-2 GeV
+  // Fine binning (0.05 deg x 1 MeV): the raw truth carries no
+  // detector resolution, and -B_Lambda is steep in p_pi, so a coarse
+  // grid would add spurious smearing that leaks the huge near-
+  // threshold population into the deeper signal window (found
+  // 2026-07-26 vs the standalone PWIA). 1 MeV << the 2.55/6 MeV
+  // Gaussian applied later, so binning smearing is now negligible.
   auto h = new TH2D("h_pip",
     "K0S decay pi+ (truth);#theta_{#pi} [deg];p_{#pi} [GeV/c]",
-    300, 0., 30., 400, 0., 2.0);
+    600, 0., 30., 2000, 0., 2.0);
 
   const double pstar = 0.5 * std::sqrt(M_K0*M_K0 - 4.*M_PIP*M_PIP);
   TRandom3 rng(12345);
