@@ -1,0 +1,8 @@
+/vis/verbose confirmations
+/vis/open RayTracer
+/vis/drawVolume
+/vis/rayTracer/backgroundColour 0 0 0
+/vis/rayTracer/lightDirection -0.3 -1 0.2
+/vis/rayTracer/eyePosition 0 9000 0 mm
+/vis/rayTracer/target 0 900 0 mm
+/vis/rayTracer/trace ana/fig/setup_topview.jpg
