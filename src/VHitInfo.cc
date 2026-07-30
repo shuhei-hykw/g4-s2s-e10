@@ -79,9 +79,14 @@ VHitInfo::VHitInfo(const G4String& name, G4Step* step,
   TLorentzVector v(m_lposition.x(), m_lposition.y(), m_lposition.z(),
                    pre->GetGlobalTime());
   const auto experiment = ConfMan::GetInstance().Get<G4int>("Experiment");
-  const auto status_code = (experiment == 90) ? m_track_id : 0;
+  // E10 also needs the track id (fStatusCode) offline, to match a
+  // single physical track across TOF/AC1/WC hits (e.g. for
+  // reconstructing a missing-mass spectrum from a background
+  // generator's decay secondaries, which are not primaries).
+  const auto status_code =
+    (experiment == 90 || experiment == 10) ? m_track_id : 0;
   m_particle = new TParticle(m_pdg_encoding,
-                             status_code,      // // fStatusCode / track id for E90
+                             status_code,      // fStatusCode / track id for E90/E10
                              m_parent_id,      // fMother[0]
                              m_copy_number,    // fMother[1]
                              0,                // fDaughter[0]
