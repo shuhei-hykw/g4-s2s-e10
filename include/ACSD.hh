@@ -20,11 +20,13 @@ public:
 
 private:
   ACHitsCollection *ACCollection;
+  G4double m_refractive_index;
 
 public:
   void EndOfEvent(G4HCofThisEvent* HCE);
   void Initialize(G4HCofThisEvent* HCE);
   G4bool ProcessHits(G4Step *aStep, G4TouchableHistory *ROhist);
+  void SetRefractiveIndex(G4double n){ m_refractive_index = n; }
 };
 
 #endif

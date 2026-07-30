@@ -20,7 +20,8 @@ const auto& confMan = ConfMan::GetInstance();
 
 //_____________________________________________________________________________
 ACSD::ACSD(const G4String& name)
-  : G4VSensitiveDetector(name)
+  : G4VSensitiveDetector(name),
+    m_refractive_index(1.05) // aerogel radiator, e.g. AC1/SAC
 {
   collectionName.insert(name);
 }
@@ -51,6 +52,12 @@ ACSD::ProcessHits(G4Step* aStep, G4TouchableHistory *ROhist)
   if(preStepPoint->GetStepStatus() != fGeomBoundary)
     return false;
   if(Definition->GetPDGCharge() == 0.)
+    return false;
+  // Cherenkov threshold: a hit is only registered if the track's
+  // velocity exceeds the radiator's threshold beta=1/n, matching how
+  // a real aerogel Cherenkov counter responds.
+  const G4double beta = aTrack->GetVelocity()/CLHEP::c_light;
+  if(beta <= 1./m_refractive_index)
     return false;
   ACCollection->insert(new ACHit(SensitiveDetectorName, aStep));
   return true;
