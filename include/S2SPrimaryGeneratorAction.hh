@@ -63,6 +63,8 @@ private:
   void GenerateQFLambda(G4Event* anEvent);
   void GenerateQFSigmaZ(G4Event* anEvent);
   void GenerateQFSigmaP(G4Event* anEvent);
+  void GenerateK0Production(G4Event* anEvent);
+  void GenerateK0CoherentProduction(G4Event* anEvent);
   void GenerateE63_LiProfileMonoGamma(G4Event* anEvent);
   void GenerateE63_4LHGamma(G4Event* anEvent);
 };
