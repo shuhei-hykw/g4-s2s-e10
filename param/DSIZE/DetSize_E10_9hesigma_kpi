@@ -1,0 +1,103 @@
+#
+#  DetSize_E72_0
+#
+#  note:
+#    The size is not half but full length.
+#    The unit is mm.
+#
+#______________________________________________________________________________
+# Name		X	Y	Z
+#  or
+# Name		Rin	Rout	DZ
+#  or
+# Name			Value
+#
+World		15000	12000	12000
+
+# Target: must physically fit inside the E90/HypTPC target holder
+# bore that E10 shares with E90 (current design target, not the old
+# (pi-,K+) SKS-era layout). Holder inner bore = phi80mm
+# (TargetHolder Rin=40mm, param/DSIZE/DetSize_E90_20251202:94), so
+# the transverse (X,Y) box half-diagonal must stay under 40mm --
+# 50x50mm gives a corner-to-axis distance of 35.4mm (~4.6mm
+# clearance). Z=20mm (2cm) is unchanged: it sits comfortably inside
+# the holder's 100mm target-cell Z-window (DetSize_E90_20251202:105)
+# and matches the areal-density assumption used throughout
+# reaction-kinematics/geant4-scan (RHO_BE,THICK_CM=1.85,2.0). The
+# previous 75x75mm value was an E63-mechanical-dims placeholder
+# (2026-07-11) that was never checked against the real E90 holder --
+# see analysis-note.md 2026-07-19 entry.
+Target	 	50.0	50.0	20.0
+
+### Mylars
+HeBagMylarThickness		0.016
+AlMylarThickness        	0.050    # 50um
+AlPlateThickness        	0.000005 # 5nm
+CathodePlateThickness        	0.000005 # 5nm
+Sdc1MylarThickness		0.100
+Sdc2MylarThickness		0.012
+Sdc3MylarThickness		0.100
+Sdc4MylarThickness		0.100
+Sdc5MylarThickness		0.100
+
+### Counters
+
+TofSeg		80.0	580.0	30.0
+
+Ac1Frame        1550.0  1300.0  500.0
+Ac1Radiator     1450.0  995.0  113.0
+
+WcSegIn         190.0   690.0  140.0
+WcSegOut        230.0   730.0  180.0
+
+### DCs
+Sdc1Frame       578.0   430.0   136.0
+Sdc1Drift       384.0   264.0   0.001
+
+Sdc2Frame       400.0   494.0   65.6
+Sdc2Drift       160.0   300.0   0.001
+
+Sdc3Frame       1330.0  1330.0  90.0
+Sdc3X1Layer	1152.0	1152.0	0.001
+Sdc3X2Layer	1152.0	1152.0	0.001
+Sdc3Y1Layer	1152.0	1152.0	0.001
+Sdc3Y2Layer	1152.0	1152.0	0.001
+
+Sdc4Frame       1330.0  1330.0  90.0
+Sdc4Y1Layer	1152.0	1152.0	0.001
+Sdc4Y2Layer	1152.0	1152.0	0.001
+Sdc4X1Layer	1152.0	1152.0	0.001
+Sdc4X2Layer	1152.0	1152.0	0.001
+
+Sdc5Frame       1330.0  1330.0  90.0
+Sdc5Y1Layer	1152.0	864.0	0.001
+Sdc5Y2Layer	1152.0	864.0	0.001
+Sdc5X1Layer	1152.0	1152.0	0.001
+Sdc5X2Layer	1152.0	1152.0	0.001
+
+### SSDs
+SsdBase		260	310	1.6
+SsdArea		76.8	76.8	0.3
+
+### SFTs
+SftFrame	794	560	173
+SftXArea	192	160	1.0
+SftUVArea	280	160	0.5
+
+### Counters
+Bh2Seg		14.0	100.0	5.0
+Bh2SegWidth	17 14 14 14 14 14 14 17
+BacRadiator	115	115	12.4
+KvcRadiator	26	160	10.0
+
+VP1		800	800	0.001
+VP2		800	800	0.001
+VP3		800	800	0.001
+VP4		800	800	0.001
+VP5		800	800	0.001
+VP6		800	800	0.001
+
+### BAC (placeholder: E63 mechanical dims reused, no E10-specific
+### survey exists yet; only geometric acceptance matters here, EM=0)
+BacFrame         167.5  149.7  178.0
+Bac1Radiator     160.0  52.2   66.0

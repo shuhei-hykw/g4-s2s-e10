@@ -111,6 +111,9 @@ G4VPhysicalVolume* S2SDetectorConstruction::Construct()
 
   m_experiment = confMan.Get<G4int>("Experiment");
   m_check_overlaps = confMan.Get<G4bool>("CheckOverlap");
+  // "HypTPCSetup:1" -> E10-2nd shared E90/HypTPC geometry. Missing key
+  // returns 0 (legacy E10). E90 always uses this setup regardless.
+  m_hyptpc_setup = (confMan.Get<G4int>("HypTPCSetup") != 0);
 
   ///// World
   const auto& half_size = sizeMan.GetSize("World")*mm/2.;
@@ -138,7 +141,13 @@ G4VPhysicalVolume* S2SDetectorConstruction::Construct()
 #endif
 
 #if 1
-  if(m_experiment == 90){
+  // E10-2nd shares the E90/HypTPC setup (HypTPC + HTOF barrel + E90SAC),
+  // differing only in the target -- built when HypTPCSetup:1 (or E90).
+  // Requires the DCGEO/DSIZE to carry the HypTPC/HTOF/SAC/TargetHolder
+  // keys (see param/DCGEO/DCGeomParam_e10_9hesigma_kpi_hyptpc and
+  // param/DSIZE/DetSize_E10_9hesigma_kpi_hyptpc). See analysis-note.md
+  // 2026-07-23 HypTPC-for-E10 entry.
+  if(m_experiment == 90 || m_hyptpc_setup){
     ConstructHTOF();
     ConstructHypTPC();
     ConstructSAC();
@@ -163,7 +172,11 @@ G4VPhysicalVolume* S2SDetectorConstruction::Construct()
 #endif
 
 #if 1
-  if(m_experiment == 10){
+  // Near-target tracking. Legacy E10 (pi-,K+ era) used SSD+SFT; the
+  // E10-2nd HypTPC setup (and E90) instead tracks near the target with
+  // HypTPC and uses SDC1, matching the shared setup -- SSD/SFT would
+  // physically overlap the HypTPC/HTOF/SAC barrel and are dropped.
+  if(m_experiment == 10 && !m_hyptpc_setup){
     ConstructSSD();
     ConstructSFT();
   }else{
@@ -390,9 +403,11 @@ S2SDetectorConstruction::ConstructBAC()
 void
 S2SDetectorConstruction::ConstructSAC()
 {
-  if(m_experiment != 90) return;
+  // E90SAC is part of the shared E90/HypTPC setup -- build it for the
+  // E10-2nd HypTPC setup too, not only E90. See Construct() gating.
+  if(m_experiment != 90 && !m_hyptpc_setup) return;
   auto sac_sd = new ACSD("SAC");
-  // sac_sd->SetRefractiveIndex(1.05);
+  sac_sd->SetRefractiveIndex(1.05);
   G4SDManager::GetSDMpointer()->AddNewDetector(sac_sd);
   const auto& ra2 = geomMan.GetRotAngle2("SAC") * deg;
   const auto& frame_size = sizeMan.GetSize("SacFrame") * 0.5 * mm;
@@ -532,6 +547,14 @@ S2SDetectorConstruction::ConstructTarget()
   switch(m_experiment){
   case 90:
     ConstructTargetE90();
+    break;
+  case 10:
+    // E10-2nd shares the E90/HypTPC setup and differs ONLY in the
+    // target: a solid 9Be plate (sized to fit the HypTPC target
+    // holder bore) at the SAME position as the E90 target, not the
+    // E90 LD2 tube. See ConstructTargetE10() and analysis-note.md
+    // 2026-07-23 HypTPC-for-E10 entry.
+    ConstructTargetE10();
     break;
   default:
     G4double targetGapHalfZ = 0.0;
@@ -746,6 +769,47 @@ S2SDetectorConstruction::ConstructTarget()
     }
     break;
   }
+}
+
+//_____________________________________________________________________________
+void
+S2SDetectorConstruction::ConstructTargetE10()
+{
+  // E10-2nd solid target: a plain box of the configured TargetMaterial
+  // (9Be for the (K-,pi+) hypernuclear run) placed at the "Target"
+  // position, which for E10 sits at the SAME location as the E90
+  // target -- ~142 mm downstream of the HypTPC centre (the target
+  // holder is NOT at the TPC centre; see param/DCGEO comments). The
+  // box half-size and position come from the DSIZE/DCGEO "Target"
+  // keys. Deliberately kept separate from the E90 LD2-tube builder
+  // (ConstructTargetE90) so the two setups share everything EXCEPT the
+  // target volume itself.
+  const auto& half_size = sizeMan.GetSize("Target")*mm/2.;
+  const auto& pos = geomMan.GetGlobalPosition("Target");
+  G4Material* TargetMater = nullptr;
+  const auto Target = confMan.Get<G4String>("TargetMaterial");
+  if(Target == "Be"){        TargetMater = mlist.at("Be9"); }
+  else if(Target == "natLi"){ TargetMater = mlist.at("natLi"); }
+  else if(Target == "C"){     TargetMater = mlist.at("C"); }
+  else if(Target == "CH2"){   TargetMater = mlist.Polyethylene; }
+  else if(Target == "Air"){   TargetMater = mat("Air"); }
+  else{
+    G4cout << "[ConstructTargetE10] Target material '" << Target
+           << "' not handled; using Air." << G4endl;
+    TargetMater = mlist.at("Air");
+  }
+
+  G4RotationMatrix rotTarget;
+  auto TargetBox = new G4Box("TargetBox",
+                             half_size.x(), half_size.y(), half_size.z());
+  auto logTarget = new G4LogicalVolume(TargetBox, TargetMater, "logTarget");
+  new G4PVPlacement(G4Transform3D(rotTarget, pos), "physTarget",
+                    logTarget, physWorld, false, 0, m_check_overlaps);
+  logTarget->SetVisAttributes(G4Color::Gray());
+  G4cout << "[ConstructTargetE10] " << Target << " box, half-size ("
+         << half_size.x()/mm << ", " << half_size.y()/mm << ", "
+         << half_size.z()/mm << ") mm at z=" << pos.z()/mm << " mm"
+         << G4endl;
 }
 
 //_____________________________________________________________________________
@@ -1603,7 +1667,7 @@ void
 S2SDetectorConstruction::ConstructAC1()
 {
   auto ac1_sd = new ACSD("AC1");
-  // ac1_sd->SetRefractiveIndex(1.05);
+  ac1_sd->SetRefractiveIndex(1.05);
   G4SDManager::GetSDMpointer()->AddNewDetector(ac1_sd);
   const auto& ra2 = geomMan.GetRotAngle2("AC1") * deg;
   const auto& frame_size = sizeMan.GetSize("Ac1Frame") * 0.5 * mm;

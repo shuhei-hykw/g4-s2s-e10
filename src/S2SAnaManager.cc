@@ -64,6 +64,24 @@ std::vector<G4int> n_acc(kTriggerFlagSize, 0);
 std::size_t kMlTrackCount = 0;
 const bool noHist = (confMan.Get<G4String>("BranchStyle") == "E90ML");
 
+// GenPID (optional conf key): 1:K+ 2:K- 3:pi+ 4:pi- 5:p 6:e- 7:mu- 8:xi-
+// Returns "" for 0/unrecognized so callers fall back to their
+// historical per-experiment default species.
+G4String GenPidToName(G4int gen_pid)
+{
+  switch(gen_pid){
+  case 1: return "kaon+";
+  case 2: return "kaon-";
+  case 3: return "pi+";
+  case 4: return "pi-";
+  case 5: return "proton";
+  case 6: return "e-";
+  case 7: return "mu-";
+  case 8: return "xi-";
+  default: return "";
+  }
+}
+
 const std::vector<G4String>&
 e63_branch_names()
 {
@@ -152,7 +170,11 @@ S2SAnaManager::BeginOfRun( const G4Run* /* aRun */)
       if (!noHist && sd_name != "BGO") MakeHistogram(sd_name);
     }
   }
-  if(experiment == 90){
+  // E10-2nd shares the E90/HypTPC setup, so record TPC/HTOF/SAC hits
+  // when HypTPCSetup:1 (or E90) -- these are the K0S->pi+pi-
+  // displaced-vertex / pi- rejection handles.
+  static const G4bool hyptpc_setup = (confMan.Get<G4int>("HypTPCSetup") != 0);
+  if(experiment == 90 || hyptpc_setup){
     for(const auto& sd_name : std::vector<G4String>{"TPC", "HTOF", "SAC"})
     {
       G4cout << "   make branch : " << sd_name << G4endl;
@@ -359,16 +381,52 @@ void S2SAnaManager::EndOfEvent(const G4Event *anEvent)
   auto HCE = anEvent->GetHCofThisEvent();
   auto SDMan = G4SDManager::GetSDMpointer();
   std::bitset<kTriggerFlagSize> trigger_flag;
+  // Common e10 acceptance definition: is there a SINGLE track that
+  // (a) leaves a charged hit in TOF, a Cherenkov-threshold hit in AC1
+  // (n=1.05, enforced by ACSD::ProcessHits itself) and a charged hit
+  // in WC, all within a 100 ns trigger coincidence window, AND (b) is
+  // also consistently present in the tracking chambers SDC2-SDC5 (a
+  // real analysis only reconstructs a momentum for a track threading
+  // all four planes)? This mirrors the real hardware trigger plus a
+  // minimal track-quality requirement, regardless of species or
+  // whether the track is a primary or a decay secondary -- unlike
+  // the historical trigger_flag[kTOF/kAC1/kWC] above, which requires
+  // hit->IsPrimary() and a GenPID species match.
+  //
+  // SDC1 is intentionally excluded: for a generator whose primary
+  // decays in flight (e.g. K0 background), the decay vertex is
+  // typically downstream of SDC1, so requiring it would reject every
+  // such event by construction (verified empirically: zero overlap
+  // for any K0-decay secondary in this geometry -- see
+  // analysis-note.md 2026-07-13 entries).
+  //
+  // Scoped to Experiment==10 so other experiments' analyses
+  // (63/90/...) are unaffected. Originally validated offline in
+  // ana/k0_missing_mass_e10_kpi.C on a TREE:1 sample; moved here so
+  // routine TREE:0 productions (e.g. a beam-momentum scan) get the
+  // corrected PRMPThetaGen/Acc ratio directly, without needing large
+  // per-event tree output.
+  const G4double kE10CoincidenceWindow_ns = 100.;
+  std::map<G4int, G4double> e10_tofTime, e10_ac1Time, e10_wcTime;
+  std::set<G4int> e10_sdc2Tracks, e10_sdc3Tracks,
+    e10_sdc4Tracks, e10_sdc5Tracks;
   std::bitset<kRCTriggerFlagSize> rc_trigger_flag;
   static const G4int experiment = confMan.Get<G4int>("Experiment");
   static const G4int requiredTPCMt = confMan.Get<G4int>("TPCMt");
   static const G4int minTPCPadHits = std::max<G4int>(1, confMan.Get<G4int>("MinHit"));
   static const G4double truncateRate = confMan.Get<G4double>("Trunc");
   std::vector<MlTrackFeature> mlTrackFeatures;
-  G4String particle_name = "kaon+";
-  if(experiment == 63) particle_name = "pi-"; //for E63
-  //G4String particle_name = "kaon-"; //for E63
-  if(experiment == 90) particle_name = "pi-";
+  // GenPID (optional conf key, see GenPidToName), if set, takes
+  // precedence over the historical per-experiment species below.
+  static const G4int gen_pid = confMan.Get<G4int>("GenPID");
+  static const G4String gen_pid_name = GenPidToName(gen_pid);
+  G4String particle_name = gen_pid_name;
+  if(particle_name.empty()){
+    particle_name = "kaon+";
+    if(experiment == 63) particle_name = "pi-"; //for E63
+    //particle_name = "kaon-"; //for E63
+    if(experiment == 90) particle_name = "pi-";
+  }
 
   {
     //G4String name = "SDC"+std::to_string(k);
@@ -391,6 +449,7 @@ void S2SAnaManager::EndOfEvent(const G4Event *anEvent)
       auto HC = dynamic_cast<DCHitsCollection*>(HCE->GetHC(id));
       for(G4int i=0, n=HC->entries(); i<n; ++i){
         SetHitData((*HC)[i]);
+        e10_sdc2Tracks.insert((*HC)[i]->GetTrackID());
       }
       SetNhits(name, HC->entries());
     }
@@ -403,6 +462,7 @@ void S2SAnaManager::EndOfEvent(const G4Event *anEvent)
       auto HC = dynamic_cast<DCHitsCollection*>(HCE->GetHC(id));
       for(G4int i=0, n=HC->entries(); i<n; ++i){
         SetHitData((*HC)[i]);
+        e10_sdc3Tracks.insert((*HC)[i]->GetTrackID());
       }
       SetNhits(name, HC->entries());
     }
@@ -415,6 +475,7 @@ void S2SAnaManager::EndOfEvent(const G4Event *anEvent)
       auto HC = dynamic_cast<DCHitsCollection*>(HCE->GetHC(id));
       for(G4int i=0, n=HC->entries(); i<n; ++i){
         SetHitData((*HC)[i]);
+        e10_sdc4Tracks.insert((*HC)[i]->GetTrackID());
       }
       SetNhits(name, HC->entries());
     }
@@ -427,6 +488,7 @@ void S2SAnaManager::EndOfEvent(const G4Event *anEvent)
       auto HC = dynamic_cast<DCHitsCollection*>(HCE->GetHC(id));
       for(G4int i=0, n=HC->entries(); i<n; ++i){
         SetHitData((*HC)[i]);
+        e10_sdc5Tracks.insert((*HC)[i]->GetTrackID());
       }
       SetNhits(name, HC->entries());
     }
@@ -448,6 +510,7 @@ void S2SAnaManager::EndOfEvent(const G4Event *anEvent)
         auto hit = (*HC)[i];
         if(hit->Is(particle_name) && hit->IsPrimary()) trigger_flag[kTOF] = true;
         if(experiment == 90) trigger_flag[kE90TOF] = true;
+        if(hit->GetCharge() != 0.) e10_tofTime[hit->GetTrackID()] = hit->GetTime();
         SetHitData(hit);
       }
       SetNhits("TOF", HC->entries());
@@ -461,6 +524,10 @@ void S2SAnaManager::EndOfEvent(const G4Event *anEvent)
         auto hit = (*HC)[i];
         if(hit->Is(particle_name) && hit->IsPrimary()) trigger_flag[kAC1] = true;
         if(experiment == 90 && hit->Is("pi-")) trigger_flag[kE90AC1] = true;
+        // ACSD only inserts a hit once the track's velocity exceeds
+        // the aerogel's Cherenkov threshold (see ACSD::ProcessHits),
+        // so any hit here already satisfies that condition.
+        if(hit->GetCharge() != 0.) e10_ac1Time[hit->GetTrackID()] = hit->GetTime();
         SetHitData(hit);
       }
       SetNhits("AC1", HC->entries());
@@ -473,6 +540,15 @@ void S2SAnaManager::EndOfEvent(const G4Event *anEvent)
       for(G4int i=0, n=HC->entries(); i<n; ++i){
         auto hit = (*HC)[i];
         if(hit->Is(particle_name) && hit->IsPrimary()) trigger_flag[kWC] = true;
+        // WCHit declares its own (unused, never-Set) time_/GetTime()
+        // left over from dead legacy code (see the #if 0 block in
+        // WCSD::ProcessHits), which HIDES VHitInfo::GetTime() by
+        // name lookup -- must qualify explicitly to get the real
+        // global hit time (WCHit::GetTime() returns uninitialized
+        // garbage). TOFHit/ACHit/DCHit have no such shadowing member.
+        if(hit->GetCharge() != 0.){
+          e10_wcTime[hit->GetTrackID()] = hit->VHitInfo::GetTime();
+        }
         SetHitData(hit);
       }
       SetNhits("WC", HC->entries());
@@ -643,20 +719,43 @@ void S2SAnaManager::EndOfEvent(const G4Event *anEvent)
         }
       }
 
-      if(true
-         && trigger_flag[kVP1]
-         && trigger_flag[kVP2]
-         && trigger_flag[kVP3]
-         && trigger_flag[kVP4]
-         && trigger_flag[kVP5]
-         && trigger_flag[kVP6]
-         && trigger_flag[kVP7]
-         && trigger_flag[kVP8]
-         && trigger_flag[kVP9]
-         && trigger_flag[kVP10]
-         && trigger_flag[kTOF]
-         && trigger_flag[kWC]
-         ){
+      G4bool e10_trackMatched = false;
+      if(experiment == 10){
+        for(const auto& tofPair : e10_tofTime){
+          const G4int trackId = tofPair.first;
+          const auto itAc1 = e10_ac1Time.find(trackId);
+          const auto itWc  = e10_wcTime.find(trackId);
+          if(itAc1 == e10_ac1Time.end()) continue;
+          if(itWc  == e10_wcTime.end())  continue;
+          if(!e10_sdc2Tracks.count(trackId)) continue;
+          if(!e10_sdc3Tracks.count(trackId)) continue;
+          if(!e10_sdc4Tracks.count(trackId)) continue;
+          if(!e10_sdc5Tracks.count(trackId)) continue;
+          const G4double tMin = std::min({tofPair.second, itAc1->second,
+                                           itWc->second});
+          const G4double tMax = std::max({tofPair.second, itAc1->second,
+                                           itWc->second});
+          if(tMax - tMin > kE10CoincidenceWindow_ns) continue;
+          e10_trackMatched = true;
+          break;
+        }
+      }
+      const bool isAccepted = (experiment == 10)
+        ? e10_trackMatched
+        : (true
+           && trigger_flag[kVP1]
+           && trigger_flag[kVP2]
+           && trigger_flag[kVP3]
+           && trigger_flag[kVP4]
+           && trigger_flag[kVP5]
+           && trigger_flag[kVP6]
+           && trigger_flag[kVP7]
+           && trigger_flag[kVP8]
+           && trigger_flag[kVP9]
+           && trigger_flag[kVP10]
+           && trigger_flag[kTOF]
+           && trigger_flag[kWC]);
+      if(isAccepted){
         hmap.at("PRMPThetaAcc")->
           Fill(particle.Theta()/CLHEP::deg, particle.P()/CLHEP::GeV);
       }

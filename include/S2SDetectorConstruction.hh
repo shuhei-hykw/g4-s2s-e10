@@ -33,6 +33,10 @@ public:
 private:
   G4int                           m_experiment;
   G4bool                          m_check_overlaps;
+  // E10-2nd uses the shared E90/HypTPC setup (HypTPC + HTOF + E90SAC,
+  // solid target, SDC1 -- NOT the old (pi-,K+)-era SSD/SFT). Enabled
+  // by conf key "HypTPCSetup:1"; 0/unset keeps the legacy E10 geometry.
+  G4bool                          m_hyptpc_setup;
   G4LogicalVolume*                m_world_lv;
   static std::vector<G4String>    s_detector_list;
 
@@ -63,6 +67,7 @@ private:
   void ConstructHTOF();
   void ConstructHypTPC();
   void ConstructTargetE90();
+  void ConstructTargetE10();
 
   void ConstructHBXXGe();
   void ConstructNaI();
