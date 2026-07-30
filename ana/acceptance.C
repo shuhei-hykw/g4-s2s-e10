@@ -28,7 +28,7 @@ void acceptance()
   const Double_t tmin = h_eff->GetXaxis()->GetXmin();
   const Double_t tmax = h_eff->GetXaxis()->GetXmax();
   const Double_t dp = (pmax - pmin)/h_eff->GetNbinsY();
-  const Double_t dt = (tmax - tmin)/h_eff->GetNbinsY();
+  const Double_t dt = (tmax - tmin)/h_eff->GetNbinsX();
   auto h_msr = new TH1D("h_msr", "Solid Angle; [GeV/c]; [msr]",
                         h_eff->GetNbinsY(), pmin, pmax);
   auto h_ang = new TH1D("h_ang", "Anglar Acceptance at 0.9 GeV/c; [deg];",
