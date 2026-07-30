@@ -122,9 +122,10 @@ they are hundreds of MB of binary that no sync engine handles well.
 The local layout mirrors the KEKCC one, so nothing else changes:
 
 ```shell
-# ~/local is deliberately not synced
-ln -s $HOME/local/fieldmap/S2S/E70_2023May fieldmap
-ln -s $HOME/local/root/geant4/e10 root        # ROOT output, /hsm on KEKCC
+# ~/out-of-sync is the local tree that iCloud never touches
+oos=$HOME/out-of-sync/e10
+ln -s $oos/fieldmap/S2S/E70_2023May fieldmap
+ln -s $oos/root/geant4/e10 root               # ROOT output, /hsm on KEKCC
 ```
 
 Of the 2.2 GB in `E70_2023May`, only `BH14full_20230711.dat` (445 MB)
