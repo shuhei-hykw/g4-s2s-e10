@@ -57,7 +57,43 @@ git checkout s2s
 ./build.sh
 ```
 
+### macOS (Apple Silicon)
 
+Verified on macOS 26.5 / arm64 with Geant4 11.4.1, ROOT 6.40.02 and
+CMake 4.4.0.  `build.sh` already handles the two macOS-specific steps:
+`rootcling` generates `src/Dict.cc` (on Linux the dictionary comes from
+`root_generate_dictionary`, which `CMakeLists.txt` guards with
+`UNIX AND NOT APPLE`), and `Dict_rdict.pcm` is copied next to the
+binary.  Without it every `TTree::Branch` of `vector<TParticle>` fails
+with a missing-CollectionProxy error and writes corrupted data.
+
+```shell
+. $HOME/software/geant4/11.4.1/bin/geant4.sh
+export ROOTSYS=$(root-config --prefix)
+export CMAKE_PREFIX_PATH=$HOME/software/geant4/11.4.1:$ROOTSYS
+./build.sh
+```
+
+Two things bite on this platform:
+
+- `Geant4Config.cmake` pulls in EXPAT, and CMake's `FindEXPAT`
+  resolves it to the Xcode SDK.  The resulting
+  `-isystem <SDK>/usr/include` is ordered ahead of libc++'s own
+  `math.h` wrapper, so every translation unit dies in `<cmath>` with
+  "didn't find libc++'s `<math.h>` header".  `CMakeLists.txt` clears
+  the include directory of the imported `EXPAT::EXPAT` target on
+  `APPLE`; the library itself stays linked.  Both Apple clang and
+  Homebrew clang are affected, so switching compiler is not a fix.
+- Keep the source tree out of paths containing spaces if you can.
+  `build.sh` quotes every path for the sake of iCloud Drive
+  (`~/Library/Mobile Documents/...`), but the surrounding toolchain is
+  not uniformly space-safe.
+
+Statistically validated against KEKCC: 50k events of
+`param/conf/e10_k0_c12_qf_p180.conf` agree within 1 sigma
+(`|p|` pull -0.68, `theta` pull +0.75, `PRMPThetaGen` 2348 vs 2350),
+and `ana/acceptance_extract_csv.C` reproduces
+`heff_grid_hyptpc_flat.csv` byte for byte.
 
 ## How to use
 

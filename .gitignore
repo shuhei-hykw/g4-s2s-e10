@@ -18,7 +18,12 @@ old/
 backup/
 !.gitkeep
 
-CMakeLists.txt
+# CMakeLists.txt is ignored upstream as a site-local file.  This fork
+# tracks it instead, so the G4S2SVis target and the macOS EXPAT fix
+# travel with the repository.
 fieldmap
+# /root* rather than /root: iCloud Drive keeps resurrecting the old
+# symlink as a conflict copy named "root 2".
+/root*
 rootfile*
 G4History.macro
