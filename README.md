@@ -123,7 +123,7 @@ The local layout mirrors the KEKCC one, so nothing else changes:
 
 ```shell
 # ~/out-of-sync is the local tree that iCloud never touches
-oos=$HOME/out-of-sync/e10
+oos=$HOME/out-of-sync/e10-data
 ln -s $oos/fieldmap/S2S/E70_2023May fieldmap
 ln -s $oos/root/geant4/e10 root               # ROOT output, /hsm on KEKCC
 ```
